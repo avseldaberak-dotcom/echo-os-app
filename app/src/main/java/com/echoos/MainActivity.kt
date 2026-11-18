@@ -24,20 +24,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -59,9 +51,13 @@ class EchoApplication : Application() {
     companion object { const val CHANNEL_ID = "echo_core_channel" }
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "ECHO-OS Kalkanı", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(CHANNEL_ID, "ECHO-OS Kalkanı", NotificationManager.IMPORTANCE_LOW)
+                getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
@@ -74,8 +70,6 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("tr", "TR")
-            
-            // En kaliteli ve doğal yerel sesi bulup seçelim
             try {
                 val voices = tts?.voices
                 val bestVoice = voices?.firstOrNull { 
@@ -84,9 +78,9 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
                 if (bestVoice != null) tts?.voice = bestVoice
             } catch (e: Exception) {}
 
-            // Robotikliği kıran sıcak Gövde Dublörü frekansı:
-            tts?.setPitch(0.88f)       // Daha tok, sakin ve derin frekans
-            tts?.setSpeechRate(0.96f)  // Telaşsız, sindirilebilir konuşma hızı
+            // Sıcak, sakin Gövde Dublörü frekansı
+            tts?.setPitch(0.88f)
+            tts?.setSpeechRate(0.96f)
             isReady = true
             onReady()
         }
@@ -150,10 +144,9 @@ class ProceduralBrownNoiseEngine {
             var panAngle = 0.0
 
             while (isActive && isPlaying) {
-                // 12 saniyede bir başın etrafında 360 derece dönen uzamsal salınım
                 panAngle += 0.0005
                 if (panAngle >= 2 * Math.PI) panAngle = 0.0
-                val pan = sin(panAngle) // -1.0 sol, +1.0 sağ
+                val pan = sin(panAngle)
                 val leftGain = (1.0 - pan) * 0.5
                 val rightGain = (1.0 + pan) * 0.5
 
@@ -161,7 +154,6 @@ class ProceduralBrownNoiseEngine {
                     val whiteLeft = Random.nextDouble(-1.0, 1.0)
                     val whiteRight = Random.nextDouble(-1.0, 1.0)
 
-                    // Kahverengi Gürültü Entegrasyonu (Dopamin yatıştırıcı derin bas)
                     lastOutLeft = (lastOutLeft + (0.02 * whiteLeft)) / 1.02
                     lastOutRight = (lastOutRight + (0.02 * whiteRight)) / 1.02
 
@@ -205,12 +197,14 @@ class IntentGateService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notif = NotificationCompat.Builder(this, EchoApplication.CHANNEL_ID)
-            .setContentTitle("ECHO-OS Kalkanı Devrede")
-            .setContentText("Nöro-İşletim Sistemi Aktif")
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .build()
-        startForeground(4040, notif)
+        try {
+            val notif = NotificationCompat.Builder(this, EchoApplication.CHANNEL_ID)
+                .setContentTitle("ECHO-OS Kalkanı Devrede")
+                .setContentText("Nöro-İşletim Sistemi Aktif")
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .build()
+            startForeground(4040, notif)
+        } catch (e: Exception) {}
 
         when (intent?.action) {
             ACTION_PROMPT_INTENT -> {
@@ -228,8 +222,10 @@ class IntentGateService : Service() {
             ACTION_EMERGENCY_MUTE -> {
                 noiseEngine.stop()
                 tts.stop()
-                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+                try {
+                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+                } catch (e: Exception) {}
             }
         }
         return START_STICKY
@@ -243,11 +239,11 @@ class IntentGateService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 }
 
-// --- 5. ANA EKRAN & ZİHİNSEL DÖKÜM (BRAIN DUMP) ---
+// --- 5. ANA EKRAN & ZİHİNSEL DÖKÜM ---
 class MainActivity : ComponentActivity(), SensorEventListener {
     private var sm: SensorManager? = null
-    private var stepCount by mutableIntStateOf(0)
-    private var isAwakeActive by mutableStateOf(false)
+    private var stepCountState = mutableIntStateOf(0)
+    private var isAwakeActiveState = mutableStateOf(false)
     private lateinit var tts: EchoTtsEngine
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -265,27 +261,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         tts = EchoTtsEngine(this) {}
         sm = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
 
-        // Kulaklık bağlantısını canlı yakalama
+        // Android 14 uyumlu dinamik Bluetooth dinleyicisi
         val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
-        registerReceiver(bluetoothReceiver, filter)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(bluetoothReceiver, filter)
+        }
 
         setContent {
             MaterialTheme {
                 EchoNeuroDashboard(
-                    stepCount = stepCount,
-                    isAwakeActive = isAwakeActive,
+                    stepCount = stepCountState.intValue,
+                    isAwakeActive = isAwakeActiveState.value,
                     onFocus = { sendServiceAction(IntentGateService.ACTION_CHOOSE_FOCUS) },
                     onDopamine = { sendServiceAction(IntentGateService.ACTION_CHOOSE_DOPAMINE) },
                     onAwake = { startNeuroAwake() },
                     onMute = { 
                         sendServiceAction(IntentGateService.ACTION_EMERGENCY_MUTE)
-                        isAwakeActive = false
+                        isAwakeActiveState.value = false
                     }
                 )
             }
         }
 
-        // İzinleri nazikçe iste
         val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) perms.add(Manifest.permission.POST_NOTIFICATIONS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) perms.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -299,8 +298,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun startNeuroAwake() {
-        isAwakeActive = true
-        stepCount = 0
+        isAwakeActiveState.value = true
+        stepCountState.intValue = 0
         val sensor = sm?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) 
             ?: sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         sensor?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
@@ -308,17 +307,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!isAwakeActive) return
-        stepCount++
+        if (!isAwakeActiveState.value) return
+        stepCountState.intValue++
         
-        // Titreşimle adım onayı
         val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vib?.vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
         }
 
-        if (stepCount >= 15) {
-            isAwakeActive = false
+        if (stepCountState.intValue >= 15) {
+            isAwakeActiveState.value = false
             sm?.unregisterListener(this)
             tts.speak("On beş adım tamamlandı. Beyin uyandı. Harika bir gün olsun.", "WAKE_DONE")
         }
@@ -327,7 +325,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onAccuracyChanged(p0: Sensor?, p1: Int) {}
 
     override fun onDestroy() {
-        unregisterReceiver(bluetoothReceiver)
+        try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
         sm?.unregisterListener(this)
         tts.shutdown()
         super.onDestroy()
@@ -369,7 +367,7 @@ fun EchoNeuroDashboard(
                 )
             }
 
-            // Zihinsel Döküm & 3 Mikro-Adım Paneli (Goblin Tools)
+            // Zihinsel Döküm & 3 Mikro-Adım Paneli
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF131720)),
@@ -387,21 +385,14 @@ fun EchoNeuroDashboard(
                     OutlinedTextField(
                         value = rawThought,
                         onValueChange = { rawThought = it },
-                        placeholder = { Text("Zihnini kemiren karmaşık işi buraya kus...", color = Color(0xFF475569), fontSize = 13.sp) },
+                        placeholder = { Text("Zihnini kemiren karmaşık işi buraya yaz...", color = Color(0xFF475569), fontSize = 12.sp) },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.LightGray,
-                            focusedBorderColor = Color(0xFF38BDF8),
-                            unfocusedBorderColor = Color(0xFF334155)
-                        ),
                         maxLines = 2
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = {
                             if (rawThought.isNotBlank()) {
-                                // Goblin.tools mantığı: Zihni felç etmeyen 3 mikro-fiziksel adım
                                 microSteps = listOf(
                                     "1. Masaya geç ve sadece bir yudum su al" to false,
                                     "2. Dosyayı ya da ilgili ekranı aç (başlamak zorunda değilsin)" to false,
@@ -416,14 +407,14 @@ fun EchoNeuroDashboard(
                         Text("3 MİKRO-ADIMA BÖL (FELÇ KIRICI)", fontSize = 12.sp, color = Color(0xFF38BDF8))
                     }
 
-                    // 3 Mikro Adım Listesi
+                    // Tıklanabilir Onay Kutuları
                     if (microSteps.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         microSteps.forEachIndexed { index, item ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
+                                    .padding(vertical = 2.dp)
                                     .clickable {
                                         microSteps = microSteps.toMutableList().also {
                                             it[index] = it[index].copy(second = !it[index].second)
@@ -431,12 +422,19 @@ fun EchoNeuroDashboard(
                                     },
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    imageVector = if (item.second) Icons.Default.CheckCircle else Icons.Outlined.Circle,
-                                    contentDescription = null,
-                                    tint = if (item.second) Color(0xFF4ADE80) else Color(0xFF64748B)
+                                Checkbox(
+                                    checked = item.second,
+                                    onCheckedChange = { isChecked ->
+                                        microSteps = microSteps.toMutableList().also {
+                                            it[index] = it[index].copy(second = isChecked)
+                                        }
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = Color(0xFF38BDF8),
+                                        uncheckedColor = Color(0xFF64748B)
+                                    )
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text(
                                     text = item.first,
                                     color = if (item.second) Color(0xFF64748B) else Color(0xFFE2E8F0),
@@ -448,7 +446,7 @@ fun EchoNeuroDashboard(
                 }
             }
 
-            // Canlı Adım Göstergesi (Neuro-Awake aktifse parlar)
+            // Canlı Adım Göstergesi
             if (isAwakeActive) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -465,7 +463,7 @@ fun EchoNeuroDashboard(
                 }
             }
 
-            // Çekirdek Aksiyon Butonları
+            // Çekirdek Butonlar
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
