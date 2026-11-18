@@ -1,0 +1,279 @@
+package com.echoos
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.*
+import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.IBinder
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.*
+import java.util.Locale
+import kotlin.math.sin
+
+class EchoApplication : Application() {
+    companion object { const val CHANNEL_ID = "echo_core_channel" }
+    override fun onCreate() {
+        super.onCreate()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(CHANNEL_ID, "ECHO-OS Kalkanı", NotificationManager.IMPORTANCE_LOW)
+                getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+}
+
+class HeadsetReceiver : BroadcastReceiver() {
+    @SuppressLint("MissingPermission")
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
+            val sIntent = Intent(context, IntentGateService::class.java).apply {
+                action = IntentGateService.ACTION_PROMPT_INTENT
+            }
+            ContextCompat.startForegroundService(context, sIntent)
+        }
+    }
+}
+
+class EchoTtsEngine(context: Context, private val onReady: () -> Unit) : TextToSpeech.OnInitListener {
+    private var tts: TextToSpeech? = null
+    private var isReady = false
+    init {
+        try { tts = TextToSpeech(context, this) } catch (e: Exception) { e.printStackTrace() }
+    }
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts?.language = Locale("tr", "TR")
+            tts?.setPitch(0.92f)
+            tts?.setSpeechRate(1.05f)
+            isReady = true
+            onReady()
+        }
+    }
+    fun speak(text: String, id: String, onDone: (() -> Unit)? = null) {
+        if (!isReady) return
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(i: String?) {}
+            override fun onDone(i: String?) { if (i == id) onDone?.invoke() }
+            @Deprecated("Deprecated") override fun onError(i: String?) {}
+        })
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+    }
+    fun stop() { tts?.stop() }
+    fun shutdown() { tts?.stop(); tts?.shutdown(); tts = null }
+}
+
+class AudioEngineManager(context: Context) {
+    private var exoPlayer: ExoPlayer? = try {
+        ExoPlayer.Builder(context).build().apply { repeatMode = Player.REPEAT_MODE_ALL }
+    } catch (e: Exception) { null }
+    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private var spatialJob: Job? = null
+    fun startFocusSession(uri: Uri?) {
+        exoPlayer?.let { player ->
+            uri?.let { try { player.setMediaItem(MediaItem.fromUri(it)); player.prepare(); player.play() } catch (e: Exception) {} }
+            spatialJob?.cancel()
+            spatialJob = scope.launch(Dispatchers.Default) {
+                var angle = 0.0
+                while (isActive) {
+                    angle += 0.05
+                    if (angle >= 2 * Math.PI) angle = 0.0
+                    delay(50)
+                }
+            }
+        }
+    }
+    fun stopAudio() { spatialJob?.cancel(); exoPlayer?.stop() }
+    fun release() { stopAudio(); exoPlayer?.release(); exoPlayer = null; scope.cancel() }
+}
+
+class NeuroAwakeManager(private val context: Context, private val ttsEngine: EchoTtsEngine) : SensorEventListener {
+    private val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+    private val stepSensor = sm?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+    private var steps = 0
+    fun triggerWake() {
+        ttsEngine.speak("Korteks kilidini açmak için 15 adım gerekiyor. Adım bir.", "WAKE") {
+            steps = 0
+            stepSensor?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        }
+    }
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type == Sensor.TYPE_STEP_DETECTOR) {
+            steps++
+            if (steps >= 15) {
+                sm?.unregisterListener(this)
+                ttsEngine.speak("15 adım tamamlandı. Sistem aktif.", "WAKE_DONE")
+            }
+        }
+    }
+    fun stop() { sm?.unregisterListener(this) }
+    override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+}
+
+class SensoryEmergencyMute(private val context: Context, private val audio: AudioEngineManager, private val tts: EchoTtsEngine) {
+    fun triggerAbsoluteSilence() {
+        audio.stopAudio()
+        tts.stop()
+        try {
+            (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                ?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+        } catch (e: Exception) {}
+    }
+}
+
+class IntentGateService : Service() {
+    private lateinit var tts: EchoTtsEngine
+    private lateinit var audio: AudioEngineManager
+    private lateinit var mute: SensoryEmergencyMute
+    private lateinit var awake: NeuroAwakeManager
+
+    companion object {
+        const val ACTION_PROMPT_INTENT = "ACTION_PROMPT_INTENT"
+        const val ACTION_CHOOSE_FOCUS = "ACTION_CHOOSE_FOCUS"
+        const val ACTION_CHOOSE_DOPAMINE = "ACTION_CHOOSE_DOPAMINE"
+        const val ACTION_EMERGENCY_MUTE = "ACTION_EMERGENCY_MUTE"
+        const val ACTION_START_AWAKE = "ACTION_START_AWAKE"
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        tts = EchoTtsEngine(this) {}
+        audio = AudioEngineManager(this)
+        awake = NeuroAwakeManager(this, tts)
+        mute = SensoryEmergencyMute(this, audio, tts)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        try {
+            val notif = NotificationCompat.Builder(this, EchoApplication.CHANNEL_ID)
+                .setContentTitle("ECHO-OS Kalkanı Devrede")
+                .setContentText("Nöro-İşletim Sistemi Aktif")
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .build()
+            startForeground(4040, notif)
+        } catch (e: Exception) { e.printStackTrace() }
+
+        when (intent?.action) {
+            ACTION_PROMPT_INTENT -> tts.speak("Bağlandık. Odak mı, eğlence mi?", "GATE")
+            ACTION_CHOOSE_FOCUS -> tts.speak("Kalkanlar devrede. 8-Audio akışı başlatılıyor.", "FOCUS") {
+                val uri = Uri.parse("android.resource://$packageName/raw/focus_loop_130bpm")
+                audio.startFocusSession(uri)
+            }
+            ACTION_CHOOSE_DOPAMINE -> tts.speak("Serbest akış. Zaman körlüğü kalkanı izlemede.", "DOPAMINE")
+            ACTION_START_AWAKE -> awake.triggerWake()
+            ACTION_EMERGENCY_MUTE -> mute.triggerAbsoluteSilence()
+        }
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        audio.release(); tts.shutdown(); awake.stop(); super.onDestroy()
+    }
+    override fun onBind(intent: Intent?): IBinder? = null
+}
+
+class MainActivity : ComponentActivity() {
+    private val launcher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        setContent {
+            MaterialTheme {
+                EchoDashboard(
+                    onRequestPerms = {
+                        val perms = mutableListOf<String>()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) perms.add(Manifest.permission.ACTIVITY_RECOGNITION)
+                        try { launcher.launch(perms.toTypedArray()) } catch (e: Exception) {}
+                    },
+                    onFocus = { send(IntentGateService.ACTION_CHOOSE_FOCUS) },
+                    onDopamine = { send(IntentGateService.ACTION_CHOOSE_DOPAMINE) },
+                    onAwake = { send(IntentGateService.ACTION_START_AWAKE) },
+                    onMute = { send(IntentGateService.ACTION_EMERGENCY_MUTE) }
+                )
+            }
+        }
+    }
+
+    private fun send(act: String) {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, IntentGateService::class.java).apply { action = act })
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+}
+
+@Composable
+fun EchoDashboard(
+    onRequestPerms: () -> Unit,
+    onFocus: () -> Unit,
+    onDopamine: () -> Unit,
+    onAwake: () -> Unit,
+    onMute: () -> Unit
+) {
+    LaunchedEffect(Unit) {
+        onRequestPerms()
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0E11)) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 28.dp)) {
+                Text("ECHO-OS", color = Color(0xFFE2E8F0), fontSize = 26.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text("Nöro-İşletim Sistemi v1.0", color = Color(0xFF64748B), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            }
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Button(onClick = onFocus, modifier = Modifier.fillMaxWidth().height(64.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))) {
+                    Text("ODAK KALKANI (8D AUDIO)", color = Color(0xFF38BDF8), fontWeight = FontWeight.SemiBold)
+                }
+                Button(onClick = onDopamine, modifier = Modifier.fillMaxWidth().height(64.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))) {
+                    Text("SERBEST MOLA (ZAMAN KÖR KORUMASI)", color = Color(0xFFA855F7), fontWeight = FontWeight.SemiBold)
+                }
+                OutlinedButton(onClick = onAwake, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(12.dp)) {
+                    Text("NEURO-AWAKE (15 ADIM TEST)", color = Color(0xFF94A3B8))
+                }
+            }
+            Button(onClick = onMute, modifier = Modifier.fillMaxWidth().height(72.dp).padding(bottom = 12.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D))) {
+                Text("ACİL SUSTURUCU (MUTLAK SESSİZLİK)", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
