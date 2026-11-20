@@ -29,6 +29,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -40,7 +41,42 @@ import java.util.Locale
 import kotlin.math.sin
 import kotlin.random.Random
 
-// --- 1. UYGULAMA ÇEKİRDEĞİ ---
+// --- 1. MİKRO EYLEM ÜRETİCİ (EN BAŞA ALINDI) ---
+fun generateContextualSteps(thought: String): List<Pair<String, Boolean>> {
+    val lower = thought.lowercase()
+    return when {
+        lower.contains("oda") || lower.contains("temiz") || lower.contains("topla") || lower.contains("ev") -> {
+            listOf(
+                "1. Yalnızca yerdeki 1 parça nesneyi kaldır" to false,
+                "2. Masanın üzerindeki ilk çöpü kutuya at" to false,
+                "3. Yatağın sadece örtüsünü düzelt ve dur" to false
+            )
+        }
+        lower.contains("yaz") || lower.contains("rapor") || lower.contains("mail") || lower.contains("kod") || lower.contains("ödev") -> {
+            listOf(
+                "1. İlgili belgeyi sadece ekranda aç" to false,
+                "2. Yalnızca 1 başlık yazıp bırak" to false,
+                "3. 2 dakika ekrana bak, gerisini düşünme" to false
+            )
+        }
+        lower.contains("ara") || lower.contains("telefon") || lower.contains("mesaj") -> {
+            listOf(
+                "1. Rehberi aç ve numarayı ekrana getir" to false,
+                "2. Ne diyeceğinin ilk kelimesini fısılda" to false,
+                "3. Çağrı tuşuna basıp telefonu kulağına götür" to false
+            )
+        }
+        else -> {
+            listOf(
+                "1. Bu iş için gereken fiziksel alana sadece geç ve otur" to false,
+                "2. İlgili ilk eşyayı eline al (başlamak zorunda değilsin)" to false,
+                "3. Yalnızca 60 saniye boyunca ilk adıma bak" to false
+            )
+        }
+    }
+}
+
+// --- 2. UYGULAMA ÇEKİRDEĞİ ---
 class EchoApplication : Application() {
     companion object { const val CHANNEL_ID = "echo_core_channel" }
     override fun onCreate() {
@@ -56,7 +92,7 @@ class EchoApplication : Application() {
     }
 }
 
-// --- 2. GÖVDE DUBLÖRÜ (ALTER EGO TTS MOTORU) ---
+// --- 3. GÖVDE DUBLÖRÜ (ALTER EGO TTS) ---
 class EchoTtsEngine(private val context: Context, private val onReady: () -> Unit) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = TextToSpeech(context, this)
     private var isReady = false
@@ -71,7 +107,7 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
         }
     }
 
-    fun speak(text: String, id: String, onDone: (() -> Unit)? = null) {
+    fun speak(text: String, id: String) {
         if (!isReady) return
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
     }
@@ -83,7 +119,7 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
     }
 }
 
-// --- 3. ÇİFT MODLU 8D SES MOTORU (Brown Noise & Ritmik Kinetik) ---
+// --- 4. ÇİFT MODLU 8D SES MOTORU ---
 class ProceduralAudioEngine {
     private var isPlaying = false
     private var audioTrack: AudioTrack? = null
@@ -173,7 +209,7 @@ class ProceduralAudioEngine {
     }
 }
 
-// --- 4. ARKA PLAN SERVİSİ VE KADEMELİ PİST (RUNWAY) ---
+// --- 5. ÇEKİRDEK SERVİS VE PİST MOTORU ---
 class IntentGateService : Service() {
     private var tts: EchoTtsEngine? = null
     private val audioEngine = ProceduralAudioEngine()
@@ -273,7 +309,7 @@ class IntentGateService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 }
 
-// --- 5. ANA EKRAN BİLEŞENİ ---
+// --- 6. ANA EKRAN VE GÖSTERGE PANELİ ---
 class MainActivity : ComponentActivity() {
     private var isMutedState = mutableStateOf(false)
 
@@ -295,11 +331,11 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     onStartBreak = { minutes ->
-                        val intent = Intent(this, IntentGateService::class.java).apply {
+                        val intent = Intent(this@MainActivity, IntentGateService::class.java).apply {
                             action = IntentGateService.ACTION_START_BREAK
                             putExtra(IntentGateService.EXTRA_BREAK_MINUTES, minutes)
                         }
-                        ContextCompat.startForegroundService(this, intent)
+                        ContextCompat.startForegroundService(this@MainActivity, intent)
                     },
                     onToggleMute = {
                         sendServiceAction(IntentGateService.ACTION_TOGGLE_EMERGENCY)
@@ -331,7 +367,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- 6. NÖRO-ARAYÜZ (YÜKSEK KONTRAST & DUYUSAL DOSTU) ---
+// --- 7. NÖRO-ARAYÜZ BİLEŞENİ ---
 @Composable
 fun EchoRefinedDashboard(
     isMuted: Boolean,
@@ -350,7 +386,6 @@ fun EchoRefinedDashboard(
                 .padding(20.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Başlık
             Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
                 Text(
                     text = "ECHO-OS",
@@ -368,7 +403,6 @@ fun EchoRefinedDashboard(
                 )
             }
 
-            // Zihinsel Döküm & Dinamik Parçalayıcı
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF171B26)),
@@ -390,15 +424,10 @@ fun EchoRefinedDashboard(
                         placeholder = { 
                             Text("Aklını kemiren işi yaz (Örn: Odayı toplamak, Rapor hazırlamak)...", color = Color(0xFF64748B), fontSize = 12.sp) 
                         },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color(0xFFF8FAFC),
-                            unfocusedTextColor = Color(0xFFF8FAFC),
-                            focusedContainerColor = Color(0xFF0E131F),
-                            unfocusedContainerColor = Color(0xFF0E131F),
-                            focusedBorderColor = Color(0xFF38BDF8),
-                            unfocusedBorderColor = Color(0xFF334155)
-                        ),
+                        textStyle = TextStyle(color = Color(0xFFF8FAFC), fontSize = 14.sp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0E131F), RoundedCornerShape(8.dp)),
                         maxLines = 2
                     )
                     Spacer(modifier = Modifier.height(10.dp))
@@ -438,11 +467,7 @@ fun EchoRefinedDashboard(
                                         microSteps = microSteps.toMutableList().also {
                                             it[index] = it[index].copy(second = isChecked)
                                         }
-                                    },
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = Color(0xFF38BDF8),
-                                        uncheckedColor = Color(0xFF94A3B8)
-                                    )
+                                    }
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
@@ -457,7 +482,6 @@ fun EchoRefinedDashboard(
                 }
             }
 
-            // Çift Odak Seçimi (Masa Başı vs Kinetik)
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "ODAK MODU SEÇİMİ",
@@ -486,7 +510,6 @@ fun EchoRefinedDashboard(
                 }
             }
 
-            // Bilinçli Mola ve Pist (Runway) Paneli
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1B4B)),
@@ -500,5 +523,50 @@ fun EchoRefinedDashboard(
                     ) {
                         Text("BİLİNÇLİ MOLA (ZAMAN KORUMASI)", color = Color(0xFFA5B4FC), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         
-                        // Sürüm uyuşmazlığı yaratmayan özel buton çipleri
-                        Row(horizontalArra
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(10, 15, 30).forEach { min ->
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            if (selectedBreakMin == min) Color(0xFF6366F1) else Color(0xFF312E81),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable { selectedBreakMin = min }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("${min}dk", fontSize = 11.sp, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = { onStartBreak(selectedBreakMin) },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4338CA))
+                    ) {
+                        Text("MOLAYI BAŞLAT (KADEMELİ GERİ SAYIM)", fontSize = 12.sp, color = Color.White)
+                    }
+                }
+            }
+
+            Button(
+                onClick = onToggleMute,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isMuted) Color(0xFF15803D) else Color(0xFF991B1B)
+                )
+            ) {
+                Text(
+                    text = if (isMuted) "SESİ ESKİ HALİNE GETİR (UNMUTE)" else "ACİL SUSTURUCU (MUTLAK SESSİZLİK)",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+            }
+        }
+    }
+}
+
+// --- KODUN SONU: ECHO-OS ---
