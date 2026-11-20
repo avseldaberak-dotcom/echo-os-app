@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -53,7 +54,11 @@ class EchoApplication : Application() {
         super.onCreate()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(CHANNEL_ID, "ECHO-OS Kalkanı", NotificationManager.IMPORTANCE_LOW)
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "ECHO-OS Kalkanı",
+                    NotificationManager.IMPORTANCE_LOW
+                )
                 getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
             }
         } catch (e: Exception) {
@@ -97,7 +102,13 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
     }
 
     fun stop() { tts?.stop() }
-    fun shutdown() { tts?.stop(); tts?.shutdown(); tts = null }
+    fun shutdown() { 
+        try {
+            tts?.stop()
+            tts?.shutdown()
+        } catch (e: Exception) {}
+        tts = null 
+    }
 }
 
 // --- 3. DOSYASIZ 8D UZAMSAL BROWN NOISE MOTORU ---
@@ -112,30 +123,38 @@ class ProceduralBrownNoiseEngine {
         isPlaying = true
 
         val sampleRate = 44100
-        val bufferSize = AudioTrack.getMinBufferSize(
+        val minBufferSize = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT
         )
+        // Güvenlik Kalkanı: Negatif veya çok küçük buffer çökmesini önler
+        val bufferSize = if (minBufferSize > 0) minBufferSize else 8192
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .build()
+        try {
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .build()
 
-        audioTrack?.play()
+            audioTrack?.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            isPlaying = false
+            return
+        }
 
         audioJob = scope.launch {
             val buffer = ShortArray(bufferSize)
@@ -179,9 +198,9 @@ class ProceduralBrownNoiseEngine {
     }
 }
 
-// --- 4. ÇEKİRDEK SERVİS ---
+// --- 4. ÇEKİRDEK SERVİS (ANDROID 14 GÜVENLİ) ---
 class IntentGateService : Service() {
-    private lateinit var tts: EchoTtsEngine
+    private var tts: EchoTtsEngine? = null
     private val noiseEngine = ProceduralBrownNoiseEngine()
 
     companion object {
@@ -201,27 +220,36 @@ class IntentGateService : Service() {
             val notif = NotificationCompat.Builder(this, EchoApplication.CHANNEL_ID)
                 .setContentTitle("ECHO-OS Kalkanı Devrede")
                 .setContentText("Nöro-İşletim Sistemi Aktif")
-                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setOngoing(true)
                 .build()
-            startForeground(4040, notif)
-        } catch (e: Exception) {}
+
+            // Android 14 FGS Kuralı: mediaPlayback türü açıkça bildiriliyor
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(4040, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(4040, notif)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         when (intent?.action) {
             ACTION_PROMPT_INTENT -> {
-                tts.speak("Bağlandık. Odaklanmak mı istersin, serbest mola mı?", "GATE")
+                tts?.speak("Bağlandık. Odaklanmak mı istersin, serbest mola mı?", "GATE")
             }
             ACTION_CHOOSE_FOCUS -> {
-                tts.speak("Kalkanlar devrede. Zihnini serbest bırak, akış başlıyor.", "FOCUS") {
+                tts?.speak("Kalkanlar devrede. Zihnini serbest bırak, akış başlıyor.", "FOCUS") {
                     noiseEngine.start()
                 }
             }
             ACTION_CHOOSE_DOPAMINE -> {
                 noiseEngine.stop()
-                tts.speak("Serbest akış. Zaman kalkanı seni izliyor, suçluluk hissetme.", "DOPAMINE")
+                tts?.speak("Serbest akış. Zaman kalkanı seni izliyor, suçluluk hissetme.", "DOPAMINE")
             }
             ACTION_EMERGENCY_MUTE -> {
                 noiseEngine.stop()
-                tts.stop()
+                tts?.stop()
                 try {
                     val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
@@ -233,7 +261,7 @@ class IntentGateService : Service() {
 
     override fun onDestroy() {
         noiseEngine.stop()
-        tts.shutdown()
+        tts?.shutdown()
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -244,7 +272,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var sm: SensorManager? = null
     private var stepCountState = mutableIntStateOf(0)
     private var isAwakeActiveState = mutableStateOf(false)
-    private lateinit var tts: EchoTtsEngine
+    private var tts: EchoTtsEngine? = null
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -254,20 +282,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    private val launcher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        // İzinler verildiğinde güvenle dinleyiciyi aç
+        registerBluetoothSafe()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = EchoTtsEngine(this) {}
         sm = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-
-        // Android 14 uyumlu dinamik Bluetooth dinleyicisi
-        val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(bluetoothReceiver, filter)
-        }
 
         setContent {
             MaterialTheme {
@@ -285,40 +310,75 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
 
+        // Açılışta izinleri güvenle talep et
+        requestRequiredPermissions()
+    }
+
+    private fun requestRequiredPermissions() {
         val perms = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) perms.add(Manifest.permission.POST_NOTIFICATIONS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) perms.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        launcher.launch(perms.toTypedArray())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            perms.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+        permissionLauncher.launch(perms.toTypedArray())
+    }
+
+    private fun registerBluetoothSafe() {
+        try {
+            val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(bluetoothReceiver, filter)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun sendServiceAction(action: String) {
-        val intent = Intent(this, IntentGateService::class.java).apply { this.action = action }
-        ContextCompat.startForegroundService(this, intent)
+        try {
+            val intent = Intent(this, IntentGateService::class.java).apply { this.action = action }
+            ContextCompat.startForegroundService(this, intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun startNeuroAwake() {
         isAwakeActiveState.value = true
         stepCountState.intValue = 0
-        val sensor = sm?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) 
-            ?: sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        sensor?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-        tts.speak("Korteks kilidi devrede. On beş adım atana kadar sistem açık kalacak. Birinci adım.", "WAKE")
+        
+        try {
+            val sensor = sm?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+                ?: sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            sensor?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+            tts?.speak("Korteks kilidi devrede. On beş adım atana kadar sistem açık kalacak. Birinci adım.", "WAKE")
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (!isAwakeActiveState.value) return
         stepCountState.intValue++
         
-        val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vib?.vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
-        }
+        try {
+            val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib?.vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
+            }
+        } catch (e: Exception) {}
 
         if (stepCountState.intValue >= 15) {
             isAwakeActiveState.value = false
             sm?.unregisterListener(this)
-            tts.speak("On beş adım tamamlandı. Beyin uyandı. Harika bir gün olsun.", "WAKE_DONE")
+            tts?.speak("On beş adım tamamlandı. Beyin uyandı. Harika bir gün olsun.", "WAKE_DONE")
         }
     }
 
@@ -326,8 +386,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onDestroy() {
         try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
-        sm?.unregisterListener(this)
-        tts.shutdown()
+        try { sm?.unregisterListener(this) } catch (e: Exception) {}
+        tts?.shutdown()
         super.onDestroy()
     }
 }
