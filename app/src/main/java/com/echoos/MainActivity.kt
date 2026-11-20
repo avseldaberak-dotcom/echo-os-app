@@ -1,16 +1,13 @@
 package com.echoos
 
 import android.Manifest
-import android.app.*
-import android.content.BroadcastReceiver
+import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -67,7 +64,7 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("tr", "TR")
-            tts?.setPitch(0.92f) // Güvenli, sakinleştirici gövde frekansı
+            tts?.setPitch(0.92f)
             tts?.setSpeechRate(0.94f)
             isReady = true
             onReady()
@@ -147,7 +144,6 @@ class ProceduralAudioEngine {
                     val whiteLeft = Random.nextDouble(-1.0, 1.0)
                     val whiteRight = Random.nextDouble(-1.0, 1.0)
 
-                    // Filtreleme: Masa başı için derin Brown Noise, Hareket için hafif ritmik nabız
                     lastOutLeft = (lastOutLeft + (0.02 * whiteLeft)) / 1.02
                     lastOutRight = (lastOutRight + (0.02 * whiteRight)) / 1.02
 
@@ -244,7 +240,6 @@ class IntentGateService : Service() {
             override fun onTick(millisUntilFinished: Long) {
                 val remainingMin = (millisUntilFinished / 1000) / 60
                 val remainingSec = (millisUntilFinished / 1000) % 60
-                // Son 5 dakika uyarısı (Pist yumuşatma)
                 if (remainingMin == 5L && remainingSec == 0L) {
                     tts?.speak("Molada son beş dakikan. Zihnini yavaşça toparlamaya başlayabilirsin.", "RUNWAY_5")
                 }
@@ -258,13 +253,11 @@ class IntentGateService : Service() {
     private fun toggleEmergencyMute() {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         if (previousVolume == -1) {
-            // Sustur
             previousVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
             audioEngine.stop()
             tts?.stop()
             am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
         } else {
-            // Sesi Eski Haline Getir (Toggle)
             am.setStreamVolume(AudioManager.STREAM_MUSIC, previousVolume, 0)
             previousVolume = -1
             tts?.speak("Ses dengesi açıldı.", "RESTORE")
@@ -361,7 +354,7 @@ fun EchoRefinedDashboard(
             Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
                 Text(
                     text = "ECHO-OS",
-                    color = Color(0xFFF8FAFC), // Yüksek kontrastlı beyaz
+                    color = Color(0xFFF8FAFC),
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
@@ -391,7 +384,6 @@ fun EchoRefinedDashboard(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     
-                    // Okunabilir Yüksek Kontrastlı Metin Alanı
                     OutlinedTextField(
                         value = rawThought,
                         onValueChange = { rawThought = it },
@@ -424,7 +416,6 @@ fun EchoRefinedDashboard(
                         Text("MİKRO EYLEME DÖNÜŞTÜR (FELÇ KIRICI)", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
                     }
 
-                    // Dinamik Adımlar
                     if (microSteps.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(10.dp))
                         microSteps.forEachIndexed { index, item ->
@@ -508,78 +499,6 @@ fun EchoRefinedDashboard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("BİLİNÇLİ MOLA (ZAMAN KORUMASI)", color = Color(0xFFA5B4FC), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf(10, 15, 30).forEach { min ->
-                                FilterChip(
-                                    selected = selectedBreakMin == min,
-                                    onClick = { selectedBreakMin = min },
-                                    label = { Text("${min}dk", fontSize = 10.sp, color = Color.White) }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Button(
-                        onClick = { onStartBreak(selectedBreakMin) },
-                        modifier = Modifier.fillMaxWidth().height(44.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4338CA))
-                    ) {
-                        Text("MOLAYI BAŞLAT (KADEMELİ GERİ SAYIM)", fontSize = 12.sp, color = Color.White)
-                    }
-                }
-            }
-
-            // Acil Susturucu Toggle Butonu
-            Button(
-                onClick = onToggleMute,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isMuted) Color(0xFF15803D) else Color(0xFF991B1B)
-                )
-            ) {
-                Text(
-                    text = if (isMuted) "SESİ ESKİ HALİNE GETİR (UNMUTE)" else "ACİL SUSTURUCU (MUTLAK SESSİZLİK)",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
-                )
-            }
-        }
-    }
-}
-
-// Konu Bağlamına Göre Mikro-Adım Üretici Fonksiyon
-fun generateContextualSteps(thought: String): listOf<Pair<String, Boolean>> {
-    val lower = thought.lowercase()
-    return when {
-        lower.contains("oda") || lower.contains("temiz") || lower.contains("topla") || lower.contains("ev") -> {
-            listOf(
-                "1. Yalnızca yerdeki 1 parça giysiyi/nesneyi kaldır" to false,
-                "2. Masanın üzerindeki ilk çöpü kutuya at" to false,
-                "3. Yatağın sadece örtüsünü düzelt ve dur" to false
-            )
-        }
-        lower.contains("yaz") || lower.contains("rapor") || lower.contains("mail") || lower.contains("kod") || lower.contains("ödev") -> {
-            listOf(
-                "1. İlgili belgeyi veya editörü sadece ekranda aç" to false,
-                "2. Yalnızca 1 cümle veya başlık yazıp bırak" to false,
-                "3. 2 dakika boyunca ekrana bak, gerisini düşünme" to false
-            )
-        }
-        lower.contains("ara") || lower.contains("telefon") || lower.contains("mesaj") -> {
-            listOf(
-                "1. Rehberi aç ve numarayı ekrana getir" to false,
-                "2. Ne diyeceğinin ilk kelimesini fısılda" to false,
-                "3. Çağrı tuşuna basıp telefonu kulağına götür" to false
-            )
-        }
-        else -> {
-            listOf(
-                "1. Bu iş için gereken fiziksel alana sadece geç ve otur" to false,
-                "2. İlgili ilk eşyayı eline al (başlamak zorunda değilsin)" to false,
-                "3. Yalnızca 60 saniye boyunca ilk adıma bak" to false
-            )
-        }
-    }
-}
+                        
+                        // Sürüm uyuşmazlığı yaratmayan özel buton çipleri
+                        Row(horizontalArra
