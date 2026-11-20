@@ -1,14 +1,11 @@
 package com.echoos
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.*
-import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -20,14 +17,13 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
+import android.os.CountDownTimer
 import android.os.IBinder
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,27 +43,23 @@ import java.util.Locale
 import kotlin.math.sin
 import kotlin.random.Random
 
-// --- 1. UYGULAMA BAŞLATICI ---
+// --- 1. UYGULAMA ÇEKİRDEĞİ ---
 class EchoApplication : Application() {
     companion object { const val CHANNEL_ID = "echo_core_channel" }
     override fun onCreate() {
         super.onCreate()
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    "ECHO-OS Kalkanı",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-                getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "ECHO-OS Kalkanı",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 }
 
-// --- 2. DOĞAL ALTER EGO TTS MOTORU ---
+// --- 2. GÖVDE DUBLÖRÜ (ALTER EGO TTS MOTORU) ---
 class EchoTtsEngine(private val context: Context, private val onReady: () -> Unit) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = TextToSpeech(context, this)
     private var isReady = false
@@ -75,17 +67,8 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("tr", "TR")
-            try {
-                val voices = tts?.voices
-                val bestVoice = voices?.firstOrNull { 
-                    it.locale.language == "tr" && !it.isNetworkConnectionRequired 
-                }
-                if (bestVoice != null) tts?.voice = bestVoice
-            } catch (e: Exception) {}
-
-            // Sıcak, sakin Gövde Dublörü frekansı
-            tts?.setPitch(0.88f)
-            tts?.setSpeechRate(0.96f)
+            tts?.setPitch(0.92f) // Güvenli, sakinleştirici gövde frekansı
+            tts?.setSpeechRate(0.94f)
             isReady = true
             onReady()
         }
@@ -93,33 +76,25 @@ class EchoTtsEngine(private val context: Context, private val onReady: () -> Uni
 
     fun speak(text: String, id: String, onDone: (() -> Unit)? = null) {
         if (!isReady) return
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(i: String?) {}
-            override fun onDone(i: String?) { if (i == id) onDone?.invoke() }
-            @Deprecated("Deprecated") override fun onError(i: String?) {}
-        })
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
     }
 
     fun stop() { tts?.stop() }
     fun shutdown() { 
-        try {
-            tts?.stop()
-            tts?.shutdown()
-        } catch (e: Exception) {}
+        try { tts?.stop(); tts?.shutdown() } catch (e: Exception) {}
         tts = null 
     }
 }
 
-// --- 3. DOSYASIZ 8D UZAMSAL BROWN NOISE MOTORU ---
-class ProceduralBrownNoiseEngine {
+// --- 3. ÇİFT MODLU 8D SES MOTORU (Brown Noise & Ritmik Kinetik) ---
+class ProceduralAudioEngine {
     private var isPlaying = false
     private var audioTrack: AudioTrack? = null
     private var audioJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + Job())
 
-    fun start() {
-        if (isPlaying) return
+    fun start(isKinetic: Boolean = false) {
+        if (isPlaying) stop()
         isPlaying = true
 
         val sampleRate = 44100
@@ -128,7 +103,6 @@ class ProceduralBrownNoiseEngine {
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        // Güvenlik Kalkanı: Negatif veya çok küçük buffer çökmesini önler
         val bufferSize = if (minBufferSize > 0) minBufferSize else 8192
 
         try {
@@ -151,7 +125,6 @@ class ProceduralBrownNoiseEngine {
 
             audioTrack?.play()
         } catch (e: Exception) {
-            e.printStackTrace()
             isPlaying = false
             return
         }
@@ -161,9 +134,10 @@ class ProceduralBrownNoiseEngine {
             var lastOutLeft = 0.0
             var lastOutRight = 0.0
             var panAngle = 0.0
+            var phase = 0.0
 
             while (isActive && isPlaying) {
-                panAngle += 0.0005
+                panAngle += 0.0006
                 if (panAngle >= 2 * Math.PI) panAngle = 0.0
                 val pan = sin(panAngle)
                 val leftGain = (1.0 - pan) * 0.5
@@ -173,14 +147,22 @@ class ProceduralBrownNoiseEngine {
                     val whiteLeft = Random.nextDouble(-1.0, 1.0)
                     val whiteRight = Random.nextDouble(-1.0, 1.0)
 
+                    // Filtreleme: Masa başı için derin Brown Noise, Hareket için hafif ritmik nabız
                     lastOutLeft = (lastOutLeft + (0.02 * whiteLeft)) / 1.02
                     lastOutRight = (lastOutRight + (0.02 * whiteRight)) / 1.02
 
-                    val sampleL = (lastOutLeft * 32767.0 * leftGain * 0.4).toInt().coerceIn(-32768, 32767)
-                    val sampleR = (lastOutRight * 32767.0 * rightGain * 0.4).toInt().coerceIn(-32768, 32767)
+                    var sampleL = (lastOutLeft * 32767.0 * leftGain * 0.45)
+                    var sampleR = (lastOutRight * 32767.0 * rightGain * 0.45)
 
-                    buffer[i] = sampleL.toShort()
-                    buffer[i + 1] = sampleR.toShort()
+                    if (isKinetic) {
+                        phase += 0.02
+                        val pulse = (sin(phase) + 1.0) * 0.5
+                        sampleL *= (0.6 + 0.4 * pulse)
+                        sampleR *= (0.6 + 0.4 * pulse)
+                    }
+
+                    buffer[i] = sampleL.toInt().coerceIn(-32768, 32767).toShort()
+                    buffer[i + 1] = sampleR.toInt().coerceIn(-32768, 32767).toShort()
                 }
                 audioTrack?.write(buffer, 0, buffer.size)
             }
@@ -190,24 +172,24 @@ class ProceduralBrownNoiseEngine {
     fun stop() {
         isPlaying = false
         audioJob?.cancel()
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
-        } catch (e: Exception) {}
+        try { audioTrack?.stop(); audioTrack?.release() } catch (e: Exception) {}
         audioTrack = null
     }
 }
 
-// --- 4. ÇEKİRDEK SERVİS (ANDROID 14 GÜVENLİ) ---
+// --- 4. ARKA PLAN SERVİSİ VE KADEMELİ PİST (RUNWAY) ---
 class IntentGateService : Service() {
     private var tts: EchoTtsEngine? = null
-    private val noiseEngine = ProceduralBrownNoiseEngine()
+    private val audioEngine = ProceduralAudioEngine()
+    private var runwayTimer: CountDownTimer? = null
+    private var previousVolume: Int = -1
 
     companion object {
-        const val ACTION_PROMPT_INTENT = "ACTION_PROMPT_INTENT"
-        const val ACTION_CHOOSE_FOCUS = "ACTION_CHOOSE_FOCUS"
-        const val ACTION_CHOOSE_DOPAMINE = "ACTION_CHOOSE_DOPAMINE"
-        const val ACTION_EMERGENCY_MUTE = "ACTION_EMERGENCY_MUTE"
+        const val ACTION_START_DEEP_FOCUS = "ACTION_START_DEEP_FOCUS"
+        const val ACTION_START_KINETIC = "ACTION_START_KINETIC"
+        const val ACTION_START_BREAK = "ACTION_START_BREAK"
+        const val ACTION_TOGGLE_EMERGENCY = "ACTION_TOGGLE_EMERGENCY"
+        const val EXTRA_BREAK_MINUTES = "EXTRA_BREAK_MINUTES"
     }
 
     override fun onCreate() {
@@ -218,99 +200,122 @@ class IntentGateService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             val notif = NotificationCompat.Builder(this, EchoApplication.CHANNEL_ID)
-                .setContentTitle("ECHO-OS Kalkanı Devrede")
-                .setContentText("Nöro-İşletim Sistemi Aktif")
+                .setContentTitle("ECHO Gövde Dublörü Aktif")
+                .setContentText("Zaman algısı ve duyusal yük dengeleniyor.")
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setOngoing(true)
                 .build()
 
-            // Android 14 FGS Kuralı: mediaPlayback türü açıkça bildiriliyor
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(4040, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
                 startForeground(4040, notif)
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
 
         when (intent?.action) {
-            ACTION_PROMPT_INTENT -> {
-                tts?.speak("Bağlandık. Odaklanmak mı istersin, serbest mola mı?", "GATE")
+            ACTION_START_DEEP_FOCUS -> {
+                runwayTimer?.cancel()
+                tts?.speak("Yanındayım. Bütün işi düşünme, sadece önündeki ilk parçaya bakıyoruz.", "FOCUS")
+                audioEngine.start(isKinetic = false)
             }
-            ACTION_CHOOSE_FOCUS -> {
-                tts?.speak("Kalkanlar devrede. Zihnini serbest bırak, akış başlıyor.", "FOCUS") {
-                    noiseEngine.start()
-                }
+            ACTION_START_KINETIC -> {
+                runwayTimer?.cancel()
+                tts?.speak("Bedenini harekete geçiriyoruz. Küçük bir hareketle başla.", "KINETIC")
+                audioEngine.start(isKinetic = true)
             }
-            ACTION_CHOOSE_DOPAMINE -> {
-                noiseEngine.stop()
-                tts?.speak("Serbest akış. Zaman kalkanı seni izliyor, suçluluk hissetme.", "DOPAMINE")
+            ACTION_START_BREAK -> {
+                audioEngine.stop()
+                val minutes = intent.getIntExtra(EXTRA_BREAK_MINUTES, 15)
+                tts?.speak("$minutes dakikalık bilinçli mola başladı. Zamanı ben tutuyorum, rahatça dinlen.", "BREAK")
+                startRunwayEngine(minutes)
             }
-            ACTION_EMERGENCY_MUTE -> {
-                noiseEngine.stop()
-                tts?.stop()
-                try {
-                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                    am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
-                } catch (e: Exception) {}
+            ACTION_TOGGLE_EMERGENCY -> {
+                toggleEmergencyMute()
             }
         }
         return START_STICKY
     }
 
+    private fun startRunwayEngine(minutes: Int) {
+        runwayTimer?.cancel()
+        val totalMs = minutes * 60 * 1000L
+        runwayTimer = object : CountDownTimer(totalMs, 1000L) {
+            override fun onTick(millisUntilFinished: Long) {
+                val remainingMin = (millisUntilFinished / 1000) / 60
+                val remainingSec = (millisUntilFinished / 1000) % 60
+                // Son 5 dakika uyarısı (Pist yumuşatma)
+                if (remainingMin == 5L && remainingSec == 0L) {
+                    tts?.speak("Molada son beş dakikan. Zihnini yavaşça toparlamaya başlayabilirsin.", "RUNWAY_5")
+                }
+            }
+            override fun onFinish() {
+                tts?.speak("Mola süresi tamamlandı. Hazır hissettiğinde bir sonraki mikro adıma geçelim.", "RUNWAY_END")
+            }
+        }.start()
+    }
+
+    private fun toggleEmergencyMute() {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (previousVolume == -1) {
+            // Sustur
+            previousVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            audioEngine.stop()
+            tts?.stop()
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+        } else {
+            // Sesi Eski Haline Getir (Toggle)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, previousVolume, 0)
+            previousVolume = -1
+            tts?.speak("Ses dengesi açıldı.", "RESTORE")
+        }
+    }
+
     override fun onDestroy() {
-        noiseEngine.stop()
+        audioEngine.stop()
+        runwayTimer?.cancel()
         tts?.shutdown()
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
 }
 
-// --- 5. ANA EKRAN & ZİHİNSEL DÖKÜM ---
-class MainActivity : ComponentActivity(), SensorEventListener {
-    private var sm: SensorManager? = null
-    private var stepCountState = mutableIntStateOf(0)
-    private var isAwakeActiveState = mutableStateOf(false)
-    private var tts: EchoTtsEngine? = null
-
-    private val bluetoothReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
-                sendServiceAction(IntentGateService.ACTION_PROMPT_INTENT)
-            }
-        }
-    }
+// --- 5. ANA EKRAN BİLEŞENİ ---
+class MainActivity : ComponentActivity() {
+    private var isMutedState = mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        // İzinler verildiğinde güvenle dinleyiciyi aç
-        registerBluetoothSafe()
-    }
+    ) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        tts = EchoTtsEngine(this) {}
-        sm = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
 
         setContent {
             MaterialTheme {
-                EchoNeuroDashboard(
-                    stepCount = stepCountState.intValue,
-                    isAwakeActive = isAwakeActiveState.value,
-                    onFocus = { sendServiceAction(IntentGateService.ACTION_CHOOSE_FOCUS) },
-                    onDopamine = { sendServiceAction(IntentGateService.ACTION_CHOOSE_DOPAMINE) },
-                    onAwake = { startNeuroAwake() },
-                    onMute = { 
-                        sendServiceAction(IntentGateService.ACTION_EMERGENCY_MUTE)
-                        isAwakeActiveState.value = false
+                EchoRefinedDashboard(
+                    isMuted = isMutedState.value,
+                    onStartFocus = { isKinetic ->
+                        sendServiceAction(
+                            if (isKinetic) IntentGateService.ACTION_START_KINETIC 
+                            else IntentGateService.ACTION_START_DEEP_FOCUS
+                        )
+                    },
+                    onStartBreak = { minutes ->
+                        val intent = Intent(this, IntentGateService::class.java).apply {
+                            action = IntentGateService.ACTION_START_BREAK
+                            putExtra(IntentGateService.EXTRA_BREAK_MINUTES, minutes)
+                        }
+                        ContextCompat.startForegroundService(this, intent)
+                    },
+                    onToggleMute = {
+                        sendServiceAction(IntentGateService.ACTION_TOGGLE_EMERGENCY)
+                        isMutedState.value = !isMutedState.value
                     }
                 )
             }
         }
 
-        // Açılışta izinleri güvenle talep et
         requestRequiredPermissions()
     }
 
@@ -322,164 +327,118 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            perms.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
         permissionLauncher.launch(perms.toTypedArray())
-    }
-
-    private fun registerBluetoothSafe() {
-        try {
-            val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(bluetoothReceiver, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                registerReceiver(bluetoothReceiver, filter)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
     }
 
     private fun sendServiceAction(action: String) {
         try {
             val intent = Intent(this, IntentGateService::class.java).apply { this.action = action }
             ContextCompat.startForegroundService(this, intent)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun startNeuroAwake() {
-        isAwakeActiveState.value = true
-        stepCountState.intValue = 0
-        
-        try {
-            val sensor = sm?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
-                ?: sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            sensor?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-            tts?.speak("Korteks kilidi devrede. On beş adım atana kadar sistem açık kalacak. Birinci adım.", "WAKE")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (!isAwakeActiveState.value) return
-        stepCountState.intValue++
-        
-        try {
-            val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vib?.vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
-            }
         } catch (e: Exception) {}
-
-        if (stepCountState.intValue >= 15) {
-            isAwakeActiveState.value = false
-            sm?.unregisterListener(this)
-            tts?.speak("On beş adım tamamlandı. Beyin uyandı. Harika bir gün olsun.", "WAKE_DONE")
-        }
-    }
-
-    override fun onAccuracyChanged(p0: Sensor?, p1: Int) {}
-
-    override fun onDestroy() {
-        try { unregisterReceiver(bluetoothReceiver) } catch (e: Exception) {}
-        try { sm?.unregisterListener(this) } catch (e: Exception) {}
-        tts?.shutdown()
-        super.onDestroy()
     }
 }
 
+// --- 6. NÖRO-ARAYÜZ (YÜKSEK KONTRAST & DUYUSAL DOSTU) ---
 @Composable
-fun EchoNeuroDashboard(
-    stepCount: Int,
-    isAwakeActive: Boolean,
-    onFocus: () -> Unit,
-    onDopamine: () -> Unit,
-    onAwake: () -> Unit,
-    onMute: () -> Unit
+fun EchoRefinedDashboard(
+    isMuted: Boolean,
+    onStartFocus: (isKinetic: Boolean) -> Unit,
+    onStartBreak: (minutes: Int) -> Unit,
+    onToggleMute: () -> Unit
 ) {
     var rawThought by remember { mutableStateOf("") }
     var microSteps by remember { mutableStateOf(listOf<Pair<String, Boolean>>()) }
+    var selectedBreakMin by remember { mutableIntStateOf(15) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF090A0D)) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(20.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Başlık
-            Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
                 Text(
                     text = "ECHO-OS",
-                    color = Color(0xFFE2E8F0),
+                    color = Color(0xFFF8FAFC), // Yüksek kontrastlı beyaz
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = "Nöro-İşletim Sistemi // AuDHD Shield",
-                    color = Color(0xFF64748B),
-                    fontSize = 11.sp,
+                    text = "Gövde Dublörü // Nöro-Regülasyon Kalkanı",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace
                 )
             }
 
-            // Zihinsel Döküm & 3 Mikro-Adım Paneli
+            // Zihinsel Döküm & Dinamik Parçalayıcı
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131720)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF171B26)),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
                         text = "ZİHİNSEL DÖKÜM (BRAIN DUMP)",
-                        color = Color(0xFF94A3B8),
+                        color = Color(0xFF38BDF8),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // Okunabilir Yüksek Kontrastlı Metin Alanı
                     OutlinedTextField(
                         value = rawThought,
                         onValueChange = { rawThought = it },
-                        placeholder = { Text("Zihnini kemiren karmaşık işi buraya yaz...", color = Color(0xFF475569), fontSize = 12.sp) },
+                        placeholder = { 
+                            Text("Aklını kemiren işi yaz (Örn: Odayı toplamak, Rapor hazırlamak)...", color = Color(0xFF64748B), fontSize = 12.sp) 
+                        },
                         modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFFF8FAFC),
+                            unfocusedTextColor = Color(0xFFF8FAFC),
+                            focusedContainerColor = Color(0xFF0E131F),
+                            unfocusedContainerColor = Color(0xFF0E131F),
+                            focusedBorderColor = Color(0xFF38BDF8),
+                            unfocusedBorderColor = Color(0xFF334155)
+                        ),
                         maxLines = 2
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     Button(
                         onClick = {
                             if (rawThought.isNotBlank()) {
-                                microSteps = listOf(
-                                    "1. Masaya geç ve sadece bir yudum su al" to false,
-                                    "2. Dosyayı ya da ilgili ekranı aç (başlamak zorunda değilsin)" to false,
-                                    "3. Yalnızca 2 dakika boyunca ilk cümleye odaklan" to false
-                                )
+                                microSteps = generateContextualSteps(rawThought)
                                 rawThought = ""
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
                     ) {
-                        Text("3 MİKRO-ADIMA BÖL (FELÇ KIRICI)", fontSize = 12.sp, color = Color(0xFF38BDF8))
+                        Text("MİKRO EYLEME DÖNÜŞTÜR (FELÇ KIRICI)", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
                     }
 
-                    // Tıklanabilir Onay Kutuları
+                    // Dinamik Adımlar
                     if (microSteps.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         microSteps.forEachIndexed { index, item ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
+                                    .padding(vertical = 4.dp)
+                                    .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
                                     .clickable {
                                         microSteps = microSteps.toMutableList().also {
                                             it[index] = it[index].copy(second = !it[index].second)
                                         }
-                                    },
+                                    }
+                                    .padding(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Checkbox(
@@ -491,14 +450,15 @@ fun EchoNeuroDashboard(
                                     },
                                     colors = CheckboxDefaults.colors(
                                         checkedColor = Color(0xFF38BDF8),
-                                        uncheckedColor = Color(0xFF64748B)
+                                        uncheckedColor = Color(0xFF94A3B8)
                                     )
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = item.first,
-                                    color = if (item.second) Color(0xFF64748B) else Color(0xFFE2E8F0),
-                                    fontSize = 12.sp
+                                    color = if (item.second) Color(0xFF64748B) else Color(0xFFF1F5F9),
+                                    fontSize = 13.sp,
+                                    fontWeight = if (item.second) FontWeight.Normal else FontWeight.Medium
                                 )
                             }
                         }
@@ -506,64 +466,120 @@ fun EchoNeuroDashboard(
                 }
             }
 
-            // Canlı Adım Göstergesi
-            if (isAwakeActive) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF312E81))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            // Çift Odak Seçimi (Masa Başı vs Kinetik)
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ODAK MODU SEÇİMİ",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onStartFocus(false) },
+                        modifier = Modifier.weight(1f).height(50.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
                     ) {
-                        Text("KORTEKS KİLİDİ: YÜRÜYÜN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text("$stepCount / 15 ADIM", color = Color(0xFF38BDF8), fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                        Text("MASA BAŞI (8D BROWN)", color = Color(0xFF38BDF8), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { onStartFocus(true) },
+                        modifier = Modifier.weight(1f).height(50.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                    ) {
+                        Text("HAREKET (8D KİNETİK)", color = Color(0xFFF59E0B), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
 
-            // Çekirdek Butonlar
-            Column(
+            // Bilinçli Mola ve Pist (Runway) Paneli
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1B4B)),
+                shape = RoundedCornerShape(14.dp)
             ) {
-                Button(
-                    onClick = onFocus,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                ) {
-                    Text("ODAK KALKANI (8D BROWN NOISE)", color = Color(0xFF38BDF8), fontWeight = FontWeight.SemiBold)
-                }
-
-                Button(
-                    onClick = onDopamine,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                ) {
-                    Text("SERBEST MOLA (ZAMAN KORUMASI)", color = Color(0xFFA855F7), fontWeight = FontWeight.SemiBold)
-                }
-
-                OutlinedButton(
-                    onClick = onAwake,
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("NEURO-AWAKE (15 ADIM TEST)", color = Color(0xFF94A3B8))
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("BİLİNÇLİ MOLA (ZAMAN KORUMASI)", color = Color(0xFFA5B4FC), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(10, 15, 30).forEach { min ->
+                                FilterChip(
+                                    selected = selectedBreakMin == min,
+                                    onClick = { selectedBreakMin = min },
+                                    label = { Text("${min}dk", fontSize = 10.sp, color = Color.White) }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Button(
+                        onClick = { onStartBreak(selectedBreakMin) },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4338CA))
+                    ) {
+                        Text("MOLAYI BAŞLAT (KADEMELİ GERİ SAYIM)", fontSize = 12.sp, color = Color.White)
+                    }
                 }
             }
 
-            // Acil Susturucu
+            // Acil Susturucu Toggle Butonu
             Button(
-                onClick = onMute,
-                modifier = Modifier.fillMaxWidth().height(60.dp),
+                onClick = onToggleMute,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D))
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isMuted) Color(0xFF15803D) else Color(0xFF991B1B)
+                )
             ) {
-                Text("ACİL SUSTURUCU (MUTLAK SESSİZLİK)", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (isMuted) "SESİ ESKİ HALİNE GETİR (UNMUTE)" else "ACİL SUSTURUCU (MUTLAK SESSİZLİK)",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
             }
+        }
+    }
+}
+
+// Konu Bağlamına Göre Mikro-Adım Üretici Fonksiyon
+fun generateContextualSteps(thought: String): listOf<Pair<String, Boolean>> {
+    val lower = thought.lowercase()
+    return when {
+        lower.contains("oda") || lower.contains("temiz") || lower.contains("topla") || lower.contains("ev") -> {
+            listOf(
+                "1. Yalnızca yerdeki 1 parça giysiyi/nesneyi kaldır" to false,
+                "2. Masanın üzerindeki ilk çöpü kutuya at" to false,
+                "3. Yatağın sadece örtüsünü düzelt ve dur" to false
+            )
+        }
+        lower.contains("yaz") || lower.contains("rapor") || lower.contains("mail") || lower.contains("kod") || lower.contains("ödev") -> {
+            listOf(
+                "1. İlgili belgeyi veya editörü sadece ekranda aç" to false,
+                "2. Yalnızca 1 cümle veya başlık yazıp bırak" to false,
+                "3. 2 dakika boyunca ekrana bak, gerisini düşünme" to false
+            )
+        }
+        lower.contains("ara") || lower.contains("telefon") || lower.contains("mesaj") -> {
+            listOf(
+                "1. Rehberi aç ve numarayı ekrana getir" to false,
+                "2. Ne diyeceğinin ilk kelimesini fısılda" to false,
+                "3. Çağrı tuşuna basıp telefonu kulağına götür" to false
+            )
+        }
+        else -> {
+            listOf(
+                "1. Bu iş için gereken fiziksel alana sadece geç ve otur" to false,
+                "2. İlgili ilk eşyayı eline al (başlamak zorunda değilsin)" to false,
+                "3. Yalnızca 60 saniye boyunca ilk adıma bak" to false
+            )
         }
     }
 }
